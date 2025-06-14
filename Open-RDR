@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# ------------------------------------------------------------
+# Open-RDR.sh :
+#   1) Demande à l’utilisateur un chemin de dossier.
+#   2) Élimine les guillemets éventuels de cette entrée.
+#   3) Développe le tilde (~) en $HOME si nécessaire.
+#   4) Regroupe les fichiers urls_status_30?.txt du dossier.
+#   5) Extrait les “candidats” (paramètre → URL externe).
+#   6) Teste chaque candidat en remplaçant la valeur paramètre par https://google.com.
+#   7) Construit un fichier final open_redirects_valides.txt si des vrais open‐redirect sont trouvés.
+# ------------------------------------------------------------
+
+# 0) Saisie du chemin, sans guillemets autour
+read -p "Entrez le chemin du dossier contenant vos urls_status_*.txt : " raw_path
+
+# 1) Supprimer tous les guillemets simples ou doubles
+#    (ex. si l’utilisateur a tapé "~/Script/INTI_wolt/urls" ou '~/Script/…')
+path="${raw_path//\"/}"
+path="${path//\'/}"
+
+# 2) Développer le tilde si présent
+#    (on ne fait ça qu’après avoir retiré les guillemets, sinon "~" reste littéral)
+if [[ "${path:0:2}" == "~/" ]]; then
+  path="$HOME/${path:2}"
+elif [[ "$path" == "~" ]]; then
+  path="$HOME"
+fi
+
+echo "→ Analyse du dossier : $path"
+
+# 3) Vérifier que le dossier existe
+if [ ! -d "$path" ]; then
+  echo "Erreur : le dossier '$path' n’existe pas."
+  exit 1
+fi
+
+payload="https://google.com"
+candidats="candidats_all.txt"
+resultats="open_redirects_valides.txt"
+
+# 4) Regrouper tous les fichiers 30x dans all_3xx.txt
+#    (on redirige stderr vers /dev/null pour éviter le message si aucun fichier ne correspond)
+cat "$path"/urls_status_30?.txt > all_3xx.txt 2>/dev/null
+
+# 5) Si aucun fichier _30?.txt n’a été trouvé, on arrête
+if [ ! -s all_3xx.txt ]; then
+  echo "ℹ️  Aucun fichier urls_status_30?.txt trouvé dans '$path'."
+  exit 0
+fi
+
+# 6) Extraire les lignes candidate : présence de “?…=http(s)://…”
+grep -E '\?.*=https?://' all_3xx.txt > "$candidats"
+
+# 7) Si candidats_all.txt est vide, on arrête
+if [ ! -s "$candidats" ]; then
+  echo "⚠️  Aucun candidat détecté (paramètre → URL externe) dans all_3xx.txt."
+  exit 0
+fi
+
+# 8) Préparer le fichier de sortie
+: > "$resultats"
+
+# 9) Pour chaque candidat, tester l’open_redirect
+while read -r ligne; do
+  # a) Extraire l’URL avant "[XXX]" (tout ce qui précède le crochet du code)
+  url_origine=$(echo "$ligne" | sed -E 's/ \[[0-9]{3}\].*$//')
+
+  # b) Isoler jusqu’à “=” du paramètre (ex : "?next", "?url", etc.)
+  prefix=$(echo "$url_origine" | sed -E 's/(.*\?[^=]+)=.*/\1/')
+
+  # c) Construire l’URL de test en remplaçant la valeur du paramètre par notre payload
+  url_test="${prefix}=${payload}"
+
+  # d) Appel à httpx pour récupérer le code et le header Location
+  sortie=$(httpx -u "$url_test" -sc -location)
+
+  # e) Extraire le code (301–308) et la cible de redirection
+  code=$(echo "$sortie" | grep -oP '\[30[1-8]\]' | tr -d '[]')
+  location=$(echo "$sortie" | grep -oP '\[https?://[^\]]+\]' | tr -d '[]')
+
+  # f) Si code entre 301 et 308 ET location == payload, on considère que c’est validé
+  if [[ "$code" =~ ^30[1-8]$ ]] && [[ "$location" == "$payload" ]]; then
+    echo "$url_test → $location" >> "$resultats"
+  fi
+done < "$candidats"
+
+echo "✓ Terminé. Liste validée dans : $resultats"
